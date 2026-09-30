@@ -92,8 +92,6 @@ Từ thư mục KLTN330_FE_BE\backend, chạy:
 
 Mã HUIT được đăng tại [KNTN330_DT](https://github.com/quangphu133/KNTN330_DT); nguồn giao diện và commit NexTask được ghi trong `SOURCE_REVISION.txt`, giữ nguyên giấy phép MIT trong `LICENSE`.
 
-Không commit token, mật khẩu, `.env`, khóa ký ứng dụng, audio hoặc dữ liệu khách hàng. `build/`, cache Flutter và APK được tạo tại máy phát triển, không phải mã nguồn bàn giao.
-
 ## Repository liên quan
 
 Ứng dụng HUIT này phụ thuộc API backend của nhóm tại [KLTN330_FE_BE](https://github.com/quangphu133/KLTN330_FE_BE). Clone và chạy backend theo hướng dẫn của repository đó trước khi chạy ứng dụng; cấu hình `API_BASE_URL` của HUIT phải trỏ tới máy đang chạy backend.

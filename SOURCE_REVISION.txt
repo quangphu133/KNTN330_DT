@@ -1,0 +1,3 @@
+Template: https://github.com/Samanyu-dev/NexTask
+License: MIT (see LICENSE)
+Source commit: 61934d0fae8341978eb420ce109caab38c83297f

@@ -70,7 +70,7 @@ Trong repo **KLTN330_FE_BE**, migration `backend/migrations/003_add_call_notific
     pg_dump -Fc -h <DB_HOST> -U <DB_USER> -d <DB_NAME> -f .\backup-before-huit-notifications.dump
     psql -h <DB_HOST> -U <DB_USER> -d <DB_NAME> -v ON_ERROR_STOP=1 -f .\backend\migrations\003_add_call_notifications.sql
 
-Hoàn tác bằng backend/migrations/003_add_call_notifications_rollback.sql; thao tác này xóa bảng thông báo. Chỉ rollback nếu đã chấp nhận mất các thông báo trong bảng.
+File `backend/migrations/003_add_call_notifications_rollback.sql` trong backend hiện hướng dẫn hoàn tác code và giữ nguyên bảng/lịch sử thông báo. Với database cũ còn danh mục Operator, xem thêm migration `004_remove_operators.sql` và điều kiện sao lưu/chuyển đổi trong README của repo backend trước khi chạy phiên bản mới.
 
 Backend bổ sung GET /api/analytics/me, GET /api/transcribe/, GET /api/notifications/, PATCH /api/notifications/{id}/read và API admin PATCH /api/mediafile/{id}/owner?telesale_id=<id>. Nhân viên upload được gán chủ sở hữu theo JWT; ID do app gửi không quyết định chủ sở hữu. Bản ghi cũ chưa có chủ sở hữu chỉ admin xem được cho tới khi admin gán lại.
 

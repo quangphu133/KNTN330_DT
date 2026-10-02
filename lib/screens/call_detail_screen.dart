@@ -67,14 +67,18 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final score = widget.call['complianceScore'] ?? _result['complianceScore'];
+    final score = _result.containsKey('complianceScore')
+        ? _result['complianceScore']
+        : widget.call['complianceScore'];
     final transcript = _asMap(_result['stt']);
     final chunks = transcript['chunks'] is List ? (transcript['chunks'] as List).whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList() : <Map<String, dynamic>>[];
     final diarization = _asMap(_result['diarization']);
     final speakers = diarization['speakers'] is List ? (diarization['speakers'] as List).whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList() : <Map<String, dynamic>>[];
     final roleMapping = _asMap(_result['roleMapping'] ?? diarization['role_mapping']);
     final speakerIds = speakers.map((speaker) => '${speaker['speaker_id']}').toSet();
-    final canConfirm = speakerIds.length == 2 && roleMapping['agent_speaker_id'] == null;
+    final canConfirm = diarization['status'] == 'completed' &&
+        speakerIds.length == 2 &&
+        roleMapping['agent_speaker_id'] == null;
     final insufficientSpeakers = diarization['status'] == 'completed' &&
         speakerIds.length != 2 && roleMapping['agent_speaker_id'] == null;
     final missingAssessmentData = score == null && !canConfirm && !insufficientSpeakers;
@@ -117,7 +121,7 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
                           final playing = playerState?.playing == true;
                           return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                             IconButton(onPressed: ready ? () => _player.seek(_player.position - const Duration(seconds: 10)) : null, icon: const Icon(Icons.replay_10_rounded)),
-                            IconButton.filled(onPressed: !ready ? _prepareAudio : playing ? _player.pause : _player.play, icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded)),
+                            IconButton.filled(onPressed: !ready ? () => _playFrom(0) : playing ? _player.pause : _player.play, icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded)),
                             IconButton(onPressed: ready ? () => _player.seek(_player.position + const Duration(seconds: 10)) : null, icon: const Icon(Icons.forward_10_rounded)),
                           ]);
                         },

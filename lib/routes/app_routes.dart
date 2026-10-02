@@ -13,13 +13,18 @@ class AppRoutes {
 }
 
 final goRouterProvider = Provider<GoRouter>((ref) {
-  final authState = ref.watch(authProvider);
+  final isInitializing = ref.watch(
+    authProvider.select((state) => state.isInitializing),
+  );
+  final isAuthenticated = ref.watch(
+    authProvider.select((state) => state.isAuthenticated),
+  );
   return GoRouter(
     initialLocation: AppRoutes.splashPath,
     redirect: (context, state) {
       final isLogin = state.matchedLocation == AppRoutes.loginPath;
-      if (authState.isInitializing) return AppRoutes.splashPath;
-      if (!authState.isAuthenticated) return isLogin ? null : AppRoutes.loginPath;
+      if (isInitializing) return AppRoutes.splashPath;
+      if (!isAuthenticated) return isLogin ? null : AppRoutes.loginPath;
       return isLogin || state.matchedLocation == AppRoutes.splashPath
           ? AppRoutes.homePath
           : null;

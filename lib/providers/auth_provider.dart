@@ -190,6 +190,16 @@ class AuthController extends Notifier<AuthState> {
   }
 
   Future<void> saveProfile(UserModel user) async {
+    final currentUser = state.user;
+    if (currentUser != null &&
+        currentUser.id == user.id &&
+        currentUser.fullName == user.fullName &&
+        currentUser.email == user.email &&
+        currentUser.role == user.role &&
+        state.errorMessage == null) {
+      return;
+    }
+
     await ref.read(secureStorageProvider).write(
       key: _profileKey,
       value: jsonEncode(user.toJson()),

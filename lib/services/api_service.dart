@@ -98,8 +98,11 @@ class ApiService {
     return _asMap(response.data);
   }
 
-  Future<List<Map<String, dynamic>>> getJobs() async {
-    final response = await _dio.get('/api/transcribe/');
+  Future<List<Map<String, dynamic>>> getJobs({int offset = 0, int limit = 100}) async {
+    final response = await _dio.get('/api/transcribe/', queryParameters: {
+      'offset': offset,
+      'limit': limit,
+    });
     if (response.data is! List) return const [];
     return (response.data as List)
         .whereType<Map>()

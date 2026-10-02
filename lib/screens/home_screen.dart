@@ -21,15 +21,18 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   static const _titles = ['Trang chủ', 'Cuộc gọi của tôi', 'Kết quả đánh giá', 'Thông báo', 'Hồ sơ'];
   static const _filters = ['Tất cả', 'Đang xử lý', 'Chờ xác nhận', 'Đã có điểm', 'Thất bại'];
+  static const _primaryRequestTimeout = Duration(seconds: 12);
 
   Timer? _refreshTimer;
   int _selectedTab = 0;
   String _selectedFilter = _filters.first;
   String _searchQuery = '';
   int _dateFilterDays = 0;
-  String? _error;
+  final Map<String, String> _errors = {};
   bool _loading = true;
   bool _loadingMore = false;
+  bool _refreshing = false;
+  bool _appResumed = true;
   List<Map<String, dynamic>> _calls = [];
   List<Map<String, dynamic>> _jobs = [];
   List<Map<String, dynamic>> _notifications = [];
@@ -43,7 +46,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshAll());
     _refreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+      if (_appResumed) {
         _refreshAll(showLoading: false);
       }
     });
@@ -58,33 +61,150 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refreshAll(showLoading: false);
+    _appResumed = state == AppLifecycleState.resumed;
+    if (_appResumed) _refreshAll(showLoading: false);
   }
 
   Future<void> _refreshAll({bool showLoading = true}) async {
+    if (_refreshing) return;
+    _refreshing = true;
     if (showLoading && mounted) setState(() => _loading = true);
     try {
-      final results = await Future.wait([
-        _api.getCalls(),
-        _api.getAnalytics(),
-        _api.getJobs(),
-        _api.getNotifications(),
+      final secondaryRefresh = Future.wait([
+        _refreshJobs(),
+        _refreshNotifications(),
+        _refreshProfile(),
       ]);
+
+      await Future.wait([
+        _refreshCalls().timeout(
+          _primaryRequestTimeout,
+          onTimeout: () => _recordError(
+            'calls',
+            TimeoutException('Máy chủ phản hồi quá lâu.'),
+          ),
+        ),
+        _refreshAnalytics().timeout(
+          _primaryRequestTimeout,
+          onTimeout: () => _recordError(
+            'analytics',
+            TimeoutException('Máy chủ phản hồi quá lâu.'),
+          ),
+        ),
+      ]);
+
+      if (mounted && _loading) setState(() => _loading = false);
+      await secondaryRefresh;
+    } finally {
+      _refreshing = false;
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _refreshCalls() async {
+    try {
+      const minimumCount = 20;
+      final limit = _calls.length > minimumCount ? _calls.length : minimumCount;
+      final refreshedCalls = await _api.getCalls(limit: limit);
       if (!mounted) return;
       setState(() {
-        _calls = results[0] as List<Map<String, dynamic>>;
-        _analytics = results[1] as Map<String, dynamic>;
-        _jobs = results[2] as List<Map<String, dynamic>>;
-        _notifications = results[3] as List<Map<String, dynamic>>;
-        _error = null;
-        _loading = false;
+        _calls = refreshedCalls;
+        _errors.remove('calls');
       });
     } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _error = _api.getError(error);
-        _loading = false;
-      });
+      _recordError('calls', error);
+    }
+  }
+
+  Future<void> _refreshAnalytics() async {
+    try {
+      final data = await _api.getAnalytics();
+      if (mounted) setState(() { _analytics = data; _errors.remove('analytics'); });
+    } catch (error) {
+      _recordError('analytics', error);
+    }
+  }
+
+  Future<void> _refreshJobs() async {
+    try {
+      const limit = 100;
+      final jobs = <Map<String, dynamic>>[];
+      var offset = 0;
+      while (true) {
+        final page = await _api.getJobs(offset: offset, limit: limit);
+        jobs.addAll(page);
+        if (page.length < limit) break;
+        offset += page.length;
+      }
+      if (mounted) setState(() { _jobs = jobs; _errors.remove('jobs'); });
+    } catch (error) {
+      _recordError('jobs', error);
+    }
+  }
+
+  Future<void> _refreshNotifications() async {
+    try {
+      final notifications = await _api.getNotifications();
+      if (mounted) setState(() { _notifications = notifications; _errors.remove('notifications'); });
+    } catch (error) {
+      _recordError('notifications', error);
+    }
+  }
+
+  Future<void> _refreshProfile() async {
+    if (ref.read(authProvider).token == null) return;
+    try {
+      final user = await _api.getCurrentUser();
+      if (mounted) {
+        await ref.read(authProvider.notifier).saveProfile(user);
+        setState(() => _errors.remove('profile'));
+      }
+    } catch (error) {
+      _recordError('profile', error);
+    }
+  }
+
+  void _recordError(String section, Object error) {
+    final message = error is TimeoutException
+        ? 'Máy chủ phản hồi quá lâu. Vui lòng thử lại.'
+        : _api.getError(error);
+    if (mounted) setState(() => _errors[section] = message);
+  }
+
+  Widget _sectionError(String section) {
+    final message = _errors[section];
+    if (message == null) return const SizedBox.shrink();
+    return Card(
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: ListTile(
+        leading: const Icon(Icons.cloud_off_outlined),
+        title: Text(message),
+        trailing: IconButton(
+          tooltip: 'Thử tải lại',
+          onPressed: () => _refreshSection(section),
+          icon: const Icon(Icons.refresh),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _refreshSection(String section) async {
+    switch (section) {
+      case 'calls':
+        await _refreshCalls();
+        break;
+      case 'analytics':
+        await _refreshAnalytics();
+        break;
+      case 'jobs':
+        await _refreshJobs();
+        break;
+      case 'notifications':
+        await _refreshNotifications();
+        break;
+      case 'profile':
+        await _refreshProfile();
+        break;
     }
   }
 
@@ -144,18 +264,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (_loading && _calls.isEmpty && _selectedTab != 4) {
       return ListView(children: [SizedBox(height: 280, child: Center(child: CircularProgressIndicator()))]);
     }
-    if (_error != null && _calls.isEmpty && _selectedTab != 4) {
-      return ListView(padding: const EdgeInsets.all(24), children: [
-        const SizedBox(height: 90),
-        const Icon(Icons.cloud_off_outlined, size: 54),
-        const SizedBox(height: 16),
-        Text(_error!, textAlign: TextAlign.center),
-        const SizedBox(height: 16),
-        FilledButton.icon(onPressed: () => _refreshAll(), icon: const Icon(Icons.refresh), label: const Text('Thử lại')),
-        const SizedBox(height: 20),
-        Text('Máy chủ: ${_api.apiBaseUrl}', textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodySmall),
-      ]);
-    }
     return switch (_selectedTab) {
       0 => _buildHome(user),
       1 => _buildCalls(),
@@ -174,6 +282,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 110),
       children: [
+        _sectionError('analytics'),
+        _sectionError('calls'),
+        _sectionError('jobs'),
+        _sectionError('notifications'),
         Card(
           color: Theme.of(context).colorScheme.primary,
           child: Padding(
@@ -215,7 +327,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       final matchesDate = _dateFilterDays == 0 || callDate == null || DateTime.now().difference(callDate.toLocal()).inDays <= _dateFilterDays;
       if (!matchesSearch || !matchesDate) return false;
       return switch (_selectedFilter) {
-        'Đang xử lý' => _statusFor(call) == 'running',
+        'Đang xử lý' => ['queued', 'running'].contains(_statusFor(call)),
         'Chờ xác nhận' => _needsConfirmation(call),
         'Đã có điểm' => call['complianceScore'] != null,
         'Thất bại' => _statusFor(call) == 'failed',
@@ -223,12 +335,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       };
     }).toList();
     final activeJobs = _jobs.where((job) =>
-      job['call_record_id'] == null && ['queued', 'running'].contains('${job['status']}'),
+      job['call_record_id'] == null && ['queued', 'running', 'failed'].contains('${job['status']}'),
     ).toList();
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
       children: [
+        _sectionError('calls'),
+        _sectionError('jobs'),
         TextField(
           decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Tìm theo tên tệp hoặc số khách hàng'),
           onChanged: (value) => setState(() => _searchQuery = value.trim()),
@@ -268,6 +382,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
       children: [
+        _sectionError('calls'),
         Card(child: ExpansionTile(
           leading: const Icon(Icons.info_outline),
           title: const Text('Cách đọc kết quả đánh giá'),
@@ -288,6 +403,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
       children: [
+        _sectionError('notifications'),
         if (_notifications.isEmpty) _emptyCard('Chưa có thông báo', 'Thông báo xử lý cuộc gọi sẽ xuất hiện ở đây.'),
         ..._notifications.map((notification) {
           final isRead = notification['is_read'] == true;
@@ -311,6 +427,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(18),
       children: [
+        _sectionError('profile'),
         const SizedBox(height: 10),
         CircleAvatar(radius: 38, child: Text(_initials(user?.fullName ?? 'H'))),
         const SizedBox(height: 14),
@@ -338,7 +455,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       child: ListTile(
         leading: CircleAvatar(child: Icon(_needsConfirmation(call) ? Icons.record_voice_over_outlined : Icons.headset_mic_outlined)),
         title: Text('${call['fileName'] ?? 'Cuộc gọi #${call['id'] ?? ''}'}', maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text('${_formatDate(call['createDate'] ?? call['callDate'])} • ${_duration(call['duration'])}\n${_statusLabel(call, status)}', maxLines: 2),
+        subtitle: Text(
+          '${_formatDate(call['createDate'] ?? call['callDate'])} • ${_duration(call['duration'])}\n${_statusLabel(call, status)}'
+          '${status == 'failed' && call['transcriptionError'] != null ? '\n${call['transcriptionError']}' : ''}',
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+        ),
         isThreeLine: true,
         trailing: score == null
             ? const Text('—', style: TextStyle(fontWeight: FontWeight.bold))
@@ -351,10 +473,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   Widget _jobCard(Map<String, dynamic> job) => Card(
     margin: const EdgeInsets.only(bottom: 10),
     child: ListTile(
-      leading: const CircleAvatar(child: Icon(Icons.hourglass_top_rounded)),
+      leading: CircleAvatar(child: Icon(job['status'] == 'failed' ? Icons.error_outline : Icons.hourglass_top_rounded)),
       title: Text('${job['fileName'] ?? 'Đang xử lý bản ghi âm'}', maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: const Text('Đang gửi đến hệ thống phân tích…'),
-      trailing: const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+      subtitle: Text(
+        '${job['status'] == 'failed' ? job['error_message'] ?? 'Xử lý thất bại' : 'Đang gửi đến hệ thống phân tích…'}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: job['status'] == 'failed'
+          ? const Icon(Icons.error_outline, color: Colors.red)
+          : const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
     ),
   );
 

@@ -1,6 +1,6 @@
 # HUIT — Ứng dụng nhân viên
 
-Ứng dụng Android giúp nhân viên gửi bản ghi cuộc gọi tới hệ thống phân tích của nhóm, theo dõi phiên âm, xác nhận người nói và xem điểm tuân thủ.
+Ứng dụng Android giúp nhân viên gửi bản ghi cuộc gọi tới hệ thống phân tích của nhóm, theo dõi phiên âm và xem điểm tuân thủ. Quản trị viên xác nhận vai trò người nói trên web.
 
 Repository ứng dụng: [quangphu133/KNTN330_DT](https://github.com/quangphu133/KNTN330_DT).
 
@@ -13,7 +13,7 @@ Giao diện Flutter được phát triển dựa trên phần ứng dụng nhân
 - Năm mục: Trang chủ, Cuộc gọi của tôi, Kết quả đánh giá, Thông báo và Hồ sơ.
 - Chọn WAV, MP3, M4A, OGG, AAC hoặc FLAC, nghe thử rồi gửi phân tích.
 - Theo dõi tác vụ, nghe bản ghi, tua theo câu phiên âm và xem lỗi cùng thời điểm phát hiện.
-- Xác nhận giọng nhân viên khi kết quả có đúng hai người nói; điểm được tính theo engine hiện có của backend.
+- Nhân viên xem kết quả sau khi quản trị viên xác nhận vai trò người nói trên web; điểm được tính theo engine hiện có của backend.
 - Chỉ đọc cuộc gọi thuộc tài khoản nhân viên đang đăng nhập.
 
 ## Cấu trúc
@@ -65,10 +65,11 @@ Backend và firewall phải cho phép kết nối LAN tới cổng 8001. Chỉ b
 
 ## Backend: migration và khởi chạy
 
-Trong repo **KLTN330_FE_BE**, migration `backend/migrations/003_add_call_notifications.sql` tạo bảng thông báo. Với cơ sở dữ liệu đang dùng, sao lưu trước và áp dụng migration một lần. Chạy từ thư mục gốc repo đó; ví dụ PostgreSQL, thay các giá trị giữ chỗ bằng cấu hình riêng của nhóm:
+Trong repo **KLTN330_FE_BE**, migration `backend/migrations/003_add_call_notifications.sql` tạo bảng thông báo. Với cơ sở dữ liệu đang dùng, sao lưu trước và áp dụng migration một lần. Phiên bản backend hiện tại cũng cần `backend/migrations/005_add_violation_deduction.sql` để thêm cột deduction; `app.db.init_db` không nâng cấp cột trong bảng đã có. Chạy migration phù hợp với schema hiện tại từ thư mục gốc repo, chỉ sau khi sao lưu thành công. Ví dụ PostgreSQL, thay các giá trị giữ chỗ bằng cấu hình riêng của nhóm:
 
     pg_dump -Fc -h <DB_HOST> -U <DB_USER> -d <DB_NAME> -f .\backup-before-huit-notifications.dump
     psql -h <DB_HOST> -U <DB_USER> -d <DB_NAME> -v ON_ERROR_STOP=1 -f .\backend\migrations\003_add_call_notifications.sql
+    psql -h <DB_HOST> -U <DB_USER> -d <DB_NAME> -v ON_ERROR_STOP=1 -f .\backend\migrations\005_add_violation_deduction.sql
 
 File `backend/migrations/003_add_call_notifications_rollback.sql` trong backend hiện hướng dẫn hoàn tác code và giữ nguyên bảng/lịch sử thông báo. Với database cũ còn danh mục Operator, xem thêm migration `004_remove_operators.sql` và điều kiện sao lưu/chuyển đổi trong README của repo backend trước khi chạy phiên bản mới.
 

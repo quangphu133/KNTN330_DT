@@ -21,7 +21,6 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
   String? _error;
   bool _loading = true;
   bool _audioLoading = false;
-  bool _confirming = false;
 
   ApiService get _api => ref.read(apiServiceProvider);
   int get _callId => _readInt(widget.call['id']);
@@ -75,13 +74,14 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
     final diarization = _asMap(_result['diarization']);
     final speakers = diarization['speakers'] is List ? (diarization['speakers'] as List).whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList() : <Map<String, dynamic>>[];
     final roleMapping = _asMap(_result['roleMapping'] ?? diarization['role_mapping']);
+    final roleStatus = '${_result['speakerRoleStatus'] ?? roleMapping['status'] ?? widget.call['speakerRoleStatus'] ?? ''}';
+    final rolePending = roleStatus == 'pending';
     final speakerIds = speakers.map((speaker) => '${speaker['speaker_id']}').toSet();
-    final canConfirm = diarization['status'] == 'completed' &&
-        speakerIds.length == 2 &&
-        roleMapping['agent_speaker_id'] == null;
     final insufficientSpeakers = diarization['status'] == 'completed' &&
-        speakerIds.length != 2 && roleMapping['agent_speaker_id'] == null;
-    final missingAssessmentData = score == null && !canConfirm && !insufficientSpeakers;
+        speakerIds.length != 2 && roleMapping['agent_speaker_id'] == null && !rolePending;
+    final waitingForAdmin = rolePending || (score == null && diarization['status'] == 'completed' &&
+        speakerIds.length == 2 && roleMapping['agent_speaker_id'] == null);
+    final violations = _violations();
 
     return Scaffold(
       appBar: AppBar(title: Text('${widget.call['fileName'] ?? 'Cuộc gọi #$_callId'}', maxLines: 1, overflow: TextOverflow.ellipsis)),
@@ -93,24 +93,60 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
                   padding: const EdgeInsets.fromLTRB(16, 10, 16, 30),
                   children: [
                     Card(child: Padding(padding: const EdgeInsets.all(18), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(score == null ? 'Chưa chấm điểm' : 'Điểm tuân thủ: ${_number(score).toStringAsFixed(1)}%', style: Theme.of(context).textTheme.titleLarge),
+                      Text(
+                        score == null ? 'Chưa chấm điểm' : 'Điểm: ${_formatScore(score)}/100',
+                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          color: score == null ? Theme.of(context).colorScheme.onSurfaceVariant : Colors.green.shade700,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       Text('Tệp: ${widget.call['fileName'] ?? 'Cuộc gọi #$_callId'}'),
                       Text('Thời lượng: ${_formatDuration(widget.call['duration'] ?? _result['duration'])}'),
                       Text('Ngày gọi: ${_formatDate(widget.call['createDate'] ?? _result['callDate'])}'),
                     ]))),
+                    if (waitingForAdmin)
+                      const Card(child: ListTile(
+                        leading: Icon(Icons.hourglass_top_rounded),
+                        title: Text('Chờ admin phân vai người nói'),
+                        subtitle: Text('Bạn vẫn có thể nghe bản ghi âm và xem phiên âm trong khi quản trị viên rà soát.'),
+                      )),
                     if (insufficientSpeakers)
                       const Card(child: ListTile(
                         leading: Icon(Icons.info_outline),
                         title: Text('Chưa đủ dữ liệu người nói'),
-                        subtitle: Text('Cần phân tách đúng hai người nói mới có thể xác nhận giọng nhân viên và tính điểm.'),
+                        subtitle: Text('Hệ thống chưa có đủ dữ liệu để quản trị viên xác nhận người nói và tính điểm.'),
                       )),
-                    if (missingAssessmentData)
+                    if (score == null && !waitingForAdmin && !insufficientSpeakers)
                       const Card(child: ListTile(
                         leading: Icon(Icons.info_outline),
                         title: Text('Chưa đủ dữ liệu để chấm điểm'),
-                        subtitle: Text('Máy chủ chưa trả về điểm tuân thủ. Ứng dụng không thay điểm còn thiếu bằng 0.'),
+                        subtitle: Text('Máy chủ chưa trả về điểm. Ứng dụng không thay điểm còn thiếu bằng 0.'),
                       )),
+                    const SizedBox(height: 8),
+                    Text('Lỗi được phát hiện', style: Theme.of(context).textTheme.titleLarge),
+                    const SizedBox(height: 8),
+                    if (score == null)
+                      const Card(child: ListTile(leading: Icon(Icons.info_outline), title: Text('Chưa có kết quả đánh giá lỗi.')))
+                    else if (violations.isEmpty)
+                      const Card(child: ListTile(leading: Icon(Icons.check_circle_outline), title: Text('Không có lỗi được ghi nhận.')))
+                    else
+                      ...violations.map((violation) {
+                        final hasTimestamp = violation['hasTimestamp'] != false;
+                        final timestamp = _number(violation['startTime']);
+                        final deduction = violation['deduction'];
+                        final details = <String>[
+                          deduction is num ? '−${_formatScore(deduction)} điểm' : 'Chưa lưu số điểm trừ',
+                          if (violation['snippet'] != null && '${violation['snippet']}'.isNotEmpty) '${violation['snippet']}',
+                          if (hasTimestamp) 'Thời điểm: ${_formatDuration(timestamp)}',
+                        ].join('\n');
+                        return Card(child: ListTile(
+                          leading: const Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
+                          title: Text('${violation['displayName'] ?? violation['categoryName'] ?? 'Lỗi'}'),
+                          subtitle: Text(details),
+                          onTap: hasTimestamp ? () => _seekAudio(timestamp) : null,
+                        ));
+                      }),
                     Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [
                       Row(children: [const Icon(Icons.graphic_eq), const SizedBox(width: 10), Expanded(child: Text('${widget.call['fileName'] ?? 'Bản ghi âm'}', maxLines: 1, overflow: TextOverflow.ellipsis)), IconButton(onPressed: _audioLoading ? null : _prepareAudio, icon: _audioLoading ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.download_rounded), tooltip: 'Tải bản ghi âm từ máy chủ')]),
                       StreamBuilder<PlayerState>(
@@ -139,30 +175,6 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
                         },
                       ),
                     ]))),
-                    if (canConfirm) Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text('Xác nhận người nói', style: Theme.of(context).textTheme.titleMedium),
-                      const SizedBox(height: 4),
-                      const Text('Chọn giọng của nhân viên để hệ thống tính điểm tuân thủ.'),
-                      const SizedBox(height: 8),
-                      for (final speaker in speakers)
-                        ListTile(
-                          leading: const Icon(Icons.record_voice_over_outlined),
-                          title: Text('${speaker['speaker_id'] ?? 'Người nói'}'),
-                          subtitle: Text(_speakerPreview(speaker['speaker_id'], diarization), maxLines: 2, overflow: TextOverflow.ellipsis),
-                          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                            IconButton(
-                              tooltip: 'Nghe thử giọng này',
-                              onPressed: _audioLoading ? null : () => _playSpeaker(speaker['speaker_id'], diarization),
-                              icon: const Icon(Icons.play_circle_outline),
-                            ),
-                            IconButton(
-                              tooltip: 'Chọn làm giọng nhân viên',
-                              onPressed: _confirming ? null : () => _confirmSpeaker('${speaker['speaker_id']}'),
-                              icon: _confirming ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.check_circle_outline),
-                            ),
-                          ]),
-                        ),
-                    ]))),
                     const SizedBox(height: 8),
                     Text('Phiên âm', style: Theme.of(context).textTheme.titleLarge),
                     const SizedBox(height: 8),
@@ -171,21 +183,12 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
                     else
                       ...chunks.map((chunk) => _transcriptCard(chunk)),
                     const SizedBox(height: 12),
-                    Text('Lỗi được phát hiện', style: Theme.of(context).textTheme.titleLarge),
-                    const SizedBox(height: 8),
-                    ..._violations().map((violation) => Card(child: ListTile(
-                      leading: const Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
-                      title: Text('${violation['phrase'] ?? violation['categoryName'] ?? 'Lỗi'}'),
-                      subtitle: Text('${violation['categoryName'] ?? 'Quy tắc'} • ${_formatDuration(violation['startTime'])}'),
-                      onTap: () => _seekAudio(_number(violation['startTime'])),
-                    ))),
-                    if (_violations().isEmpty) const Card(child: ListTile(leading: Icon(Icons.check_circle_outline), title: Text('Không có lỗi được ghi nhận trong kết quả này.'))),
                     const SizedBox(height: 14),
                     Card(child: ExpansionTile(
                       leading: const Icon(Icons.menu_book_outlined),
                       title: const Text('Hướng dẫn tiêu chí đánh giá'),
                       childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
-                      children: const [Text('Điểm số và lỗi được trả về bởi backend theo bộ quy tắc hiện hành của nhóm. Mốc thời gian của lỗi giúp nghe lại đoạn tương ứng. Nếu kết quả chưa có điểm, cần hoàn tất các bước phân tích mà hệ thống yêu cầu.')],
+                      children: const [Text('Điểm được tính trên thang tối đa 100 theo bộ quy tắc backend: bắt đầu từ 100 rồi trừ các vi phạm, tối thiểu là 0. Đây không phải phần trăm độ chính xác AI hay điểm cảm xúc. Lỗi thiếu lời chào/kết thúc không có thời điểm xảy ra chính xác. Nếu chưa chấm điểm, điều đó không có nghĩa là 0 điểm.')],
                     )),
                   ],
                 ),
@@ -217,29 +220,8 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
     return regions.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList();
   }
 
-  List<Map<String, dynamic>> _utterancesFor(Object? speakerId, Map<String, dynamic> diarization) {
-    final items = diarization['utterances'];
-    if (items is! List) return const [];
-    return items.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).where((item) => '${item['speaker_id']}' == '$speakerId').toList();
-  }
-
-  String _speakerPreview(Object? speakerId, Map<String, dynamic> diarization) {
-    final matches = _utterancesFor(speakerId, diarization);
-    return matches.isEmpty ? 'Chưa có đoạn thoại mẫu cho người nói này.' : '${matches.first['text'] ?? ''}';
-  }
-
   Future<void> _seekAudio(double seconds) async {
     await _playFrom(seconds);
-  }
-
-  Future<void> _playSpeaker(Object? speakerId, Map<String, dynamic> diarization) async {
-    final utterances = _utterancesFor(speakerId, diarization);
-    if (utterances.isEmpty) {
-      _message('Chưa có đoạn ghi âm mẫu cho người nói này.');
-      return;
-    }
-    final utterance = utterances.first;
-    await _playFrom(_number(utterance['start'] ?? utterance['start_time']));
   }
 
   Future<void> _playFrom(double seconds) async {
@@ -247,20 +229,6 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
     if (_player.processingState == ProcessingState.idle) return;
     await _player.seek(Duration(milliseconds: (seconds * 1000).round()));
     await _player.play();
-  }
-
-  Future<void> _confirmSpeaker(String speakerId) async {
-    setState(() => _confirming = true);
-    try {
-      await _api.confirmSpeaker(_callId, speakerId);
-      await _loadResult();
-      await widget.onChanged();
-      if (mounted) _message('Đã xác nhận người nói và cập nhật kết quả đánh giá.');
-    } catch (error) {
-      if (mounted) _message(_api.getError(error));
-    } finally {
-      if (mounted) setState(() => _confirming = false);
-    }
   }
 
   String _speakerLabel(String value) {
@@ -294,3 +262,8 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
 Map<String, dynamic> _asMap(Object? value) => value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
 int _readInt(Object? value) => value is int ? value : int.tryParse('$value') ?? 0;
 double _number(Object? value) => value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+String _formatScore(Object? value) {
+  final score = _number(value);
+  final truncated = (score * 10).truncateToDouble() / 10;
+  return truncated == truncated.truncateToDouble() ? truncated.toStringAsFixed(0) : truncated.toStringAsFixed(1);
+}

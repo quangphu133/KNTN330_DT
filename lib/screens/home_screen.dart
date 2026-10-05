@@ -20,7 +20,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   static const _titles = ['Trang chủ', 'Cuộc gọi của tôi', 'Kết quả đánh giá', 'Thông báo', 'Hồ sơ'];
-  static const _filters = ['Tất cả', 'Đang xử lý', 'Chờ xác nhận', 'Đã có điểm', 'Thất bại'];
+  static const _filters = ['Tất cả', 'Đang xử lý', 'Chờ admin phân vai người nói', 'Đã có điểm', 'Thất bại'];
   static const _primaryRequestTimeout = Duration(seconds: 12);
 
   Timer? _refreshTimer;
@@ -297,8 +297,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               const SizedBox(height: 20),
               Wrap(spacing: 10, runSpacing: 10, children: [
                 _SummaryPill(label: 'Cuộc gọi', value: '${_analytics['totalCalls'] ?? _calls.length}'),
-                _SummaryPill(label: 'Chờ xác nhận', value: '${_analytics['pendingSpeakerConfirmation'] ?? _calls.where(_needsConfirmation).length}'),
-                _SummaryPill(label: 'Điểm trung bình', value: score == null ? '—' : '${_number(score).toStringAsFixed(1)}%'),
+                _SummaryPill(label: 'Chờ admin phân vai người nói', value: '${_analytics['pendingSpeakerConfirmation'] ?? _calls.where(_needsConfirmation).length}'),
+                _SummaryPill(label: 'Điểm trung bình', value: score == null ? '—' : _formatScore(score)),
               ]),
             ]),
           ),
@@ -328,7 +328,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       if (!matchesSearch || !matchesDate) return false;
       return switch (_selectedFilter) {
         'Đang xử lý' => ['queued', 'running'].contains(_statusFor(call)),
-        'Chờ xác nhận' => _needsConfirmation(call),
+        'Chờ admin phân vai người nói' => _needsConfirmation(call),
         'Đã có điểm' => call['complianceScore'] != null,
         'Thất bại' => _statusFor(call) == 'failed',
         _ => true,
@@ -387,25 +387,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           leading: const Icon(Icons.info_outline),
           title: const Text('Cách đọc kết quả đánh giá'),
           childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
-          children: const [Text('Điểm tuân thủ và các lỗi bên dưới được lấy từ bộ quy tắc phân tích hiện có của nhóm. Nếu chưa có điểm, hệ thống sẽ ghi “Chưa chấm điểm”. Danh sách lỗi hiển thị nội dung và thời điểm do backend trả về; đây không phải checklist thủ công.')],
+          children: const [Text('Đây là điểm tuân thủ của cuộc gọi theo bộ luật backend, tối đa 100 điểm. Điểm được tính từ 100 rồi trừ các vi phạm, tối thiểu 0; đây không phải phần trăm độ chính xác AI hoặc điểm cảm xúc. Chạm vào cuộc gọi để xem lỗi và khoản điểm bị trừ. “Chưa chấm điểm” không đồng nghĩa với 0 điểm.')],
         )),
         const SizedBox(height: 12),
         Text('${scored.length} cuộc gọi đã có điểm', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
-        if (scored.isEmpty) _emptyCard('Chưa có kết quả đánh giá', 'Điểm sẽ xuất hiện sau khi hoàn tất phân tích và xác nhận người nói nếu cần.'),
+        if (scored.isEmpty) _emptyCard('Chưa có kết quả đánh giá', 'Điểm sẽ xuất hiện sau khi phân tích và admin xác nhận người nói nếu cần.'),
         ...scored.map((call) => _callCard(call)),
       ],
     );
   }
 
   Widget _buildNotifications() {
+    final visibleNotifications = _notifications.where((notification) =>
+      !{'needs_confirmation', 'insufficient_speakers', 'speaker_roles_pending'}
+          .contains('${notification['event_type']}'),
+    ).toList();
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
       children: [
         _sectionError('notifications'),
-        if (_notifications.isEmpty) _emptyCard('Chưa có thông báo', 'Thông báo xử lý cuộc gọi sẽ xuất hiện ở đây.'),
-        ..._notifications.map((notification) {
+        if (visibleNotifications.isEmpty) _emptyCard('Chưa có thông báo', 'Thông báo xử lý, lỗi và xóa cuộc gọi sẽ xuất hiện ở đây.'),
+        ...visibleNotifications.map((notification) {
           final isRead = notification['is_read'] == true;
           return Card(
             child: ListTile(
@@ -464,7 +468,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         isThreeLine: true,
         trailing: score == null
             ? const Text('—', style: TextStyle(fontWeight: FontWeight.bold))
-            : Text('${_number(score).toStringAsFixed(0)}%', style: TextStyle(fontWeight: FontWeight.bold, color: _number(score) >= 80 ? Colors.green.shade800 : Colors.deepOrange.shade800)),
+            : Text('${_formatScore(score)}/100', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green.shade700, fontSize: 16)),
         onTap: () => _openCall(call),
       ),
     );
@@ -574,10 +578,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  bool _needsConfirmation(Map<String, dynamic> call) =>
-      call['speakerRoleStatus'] != 'confirmed' &&
-      call['diarizationStatus'] == 'completed' &&
-      _readInt(call['speakerCount']) == 2;
+  bool _needsConfirmation(Map<String, dynamic> call) {
+    final mapping = call['roleMapping'] is Map
+        ? Map<String, dynamic>.from(call['roleMapping'] as Map)
+        : const <String, dynamic>{};
+    final status = '${call['speakerRoleStatus'] ?? mapping['status'] ?? ''}';
+    return status == 'pending' ||
+        (status != 'confirmed' && call['diarizationStatus'] == 'completed');
+  }
 
   String _statusFor(Map<String, dynamic> call) {
     if (_needsConfirmation(call)) return 'needs_confirmation';
@@ -590,11 +598,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   String _statusLabel(Map<String, dynamic> call, String status) => switch (status) {
     'queued' || 'running' => 'Đang xử lý',
-    'needs_confirmation' => 'Chờ xác nhận người nói',
+    'needs_confirmation' => 'Chờ admin phân vai người nói',
     'failed' => 'Xử lý thất bại',
     'completed' => call['diarizationStatus'] == 'completed' &&
-            call['speakerRoleStatus'] != 'confirmed' &&
-            _readInt(call['speakerCount']) != 2
+            !_needsConfirmation(call)
         ? 'Không đủ dữ liệu người nói để xác nhận'
         : call['complianceScore'] == null ? 'Chưa đủ dữ liệu để chấm điểm' : 'Đã có kết quả đánh giá',
     _ => 'Chưa chấm điểm',
@@ -780,6 +787,11 @@ class _UploadCallFormState extends State<_UploadCallForm> {
 
 int _readInt(Object? value) => value is int ? value : int.tryParse('$value') ?? 0;
 double _number(Object? value) => value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+String _formatScore(Object? value) {
+  final score = _number(value);
+  final truncated = (score * 10).truncateToDouble() / 10;
+  return truncated == truncated.truncateToDouble() ? truncated.toStringAsFixed(0) : truncated.toStringAsFixed(1);
+}
 
 Map<String, dynamic>? _firstWhereOrNull(
   Iterable<Map<String, dynamic>> items,

@@ -146,12 +146,6 @@ class ApiService {
     return _asMap(response.data);
   }
 
-  Future<void> confirmSpeaker(int callId, String speakerId) async {
-    await _dio.put('/api/mediafile/$callId/speaker-roles', data: {
-      'agentSpeakerId': speakerId,
-    });
-  }
-
   String getError(Object error) {
     if (error is DioException) {
       if (error.type == DioExceptionType.connectionError ||

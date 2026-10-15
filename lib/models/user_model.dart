@@ -16,7 +16,7 @@ class UserModel {
       id: _readInt(json['id']),
       fullName: '${json['full_name'] ?? json['fullName'] ?? ''}',
       email: '${json['email'] ?? ''}',
-      role: '${json['role'] ?? 'telesales'}',
+      role: '${json['role'] ?? ''}',
     );
   }
 

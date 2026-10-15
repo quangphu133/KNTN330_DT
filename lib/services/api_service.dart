@@ -93,6 +93,15 @@ class ApiService {
     return records.whereType<Map>().map((item) => Map<String, dynamic>.from(item)).toList();
   }
 
+  Future<List<Map<String, dynamic>>> getAssignedProjects() async {
+    final response = await _dio.get('/api/projects/');
+    if (response.data is! List) return const [];
+    return (response.data as List)
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
   Future<Map<String, dynamic>> getAnalytics() async {
     final response = await _dio.get('/api/analytics/me');
     return _asMap(response.data);
@@ -130,6 +139,7 @@ class ApiService {
 
   Future<Map<String, dynamic>> uploadCall({
     required PlatformFile file,
+    required int projectId,
     String? clientNumber,
     required void Function(int sent, int total) onProgress,
   }) async {
@@ -139,6 +149,7 @@ class ApiService {
       '/api/transcribe/upload',
       data: FormData.fromMap({
         'file': MultipartFile.fromBytes(bytes, filename: file.name),
+        'projectId': projectId,
         if ((clientNumber ?? '').trim().isNotEmpty) 'clientNumber': clientNumber!.trim(),
       }),
       onSendProgress: onProgress,

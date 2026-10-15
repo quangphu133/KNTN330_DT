@@ -99,7 +99,7 @@ class AuthController extends Notifier<AuthState> {
     try {
       _api.setAuthToken(token);
       final user = await _api.getCurrentUser();
-      if (user.role == 'admin') {
+      if (user.role != 'telesales') {
         await logout();
         return;
       }
@@ -112,7 +112,9 @@ class AuthController extends Notifier<AuthState> {
         errorMessage: null,
       );
     } catch (error) {
-      if (error is DioException && error.response?.statusCode == 401) {
+      if (error is DioException &&
+          (error.response?.statusCode == 401 ||
+              error.response?.statusCode == 403)) {
         await storage.delete(key: _tokenKey);
         await storage.delete(key: _profileKey);
         _api.setAuthToken(null);
@@ -122,7 +124,7 @@ class AuthController extends Notifier<AuthState> {
       if (savedProfile != null) {
         try {
           final user = UserModel.fromJson(jsonDecode(savedProfile) as Map<String, dynamic>);
-          if (user.role != 'admin') {
+          if (user.role == 'telesales') {
             state = AuthState(
               isInitializing: false,
               isLoading: false,
@@ -152,7 +154,7 @@ class AuthController extends Notifier<AuthState> {
       final token = await _api.login(email: email, password: password);
       _api.setAuthToken(token);
       final user = await _api.getCurrentUser();
-      if (user.role == 'admin') {
+      if (user.role != 'telesales') {
         _api.setAuthToken(null);
         throw Exception('HUIT dành cho tài khoản nhân viên. Vui lòng dùng trang quản trị.');
       }
@@ -190,6 +192,11 @@ class AuthController extends Notifier<AuthState> {
   }
 
   Future<void> saveProfile(UserModel user) async {
+    if (user.role != 'telesales') {
+      await logout();
+      return;
+    }
+
     final currentUser = state.user;
     if (currentUser != null &&
         currentUser.id == user.id &&
@@ -206,5 +213,4 @@ class AuthController extends Notifier<AuthState> {
     );
     state = state.copyWith(user: user, clearError: true);
   }
-
 }

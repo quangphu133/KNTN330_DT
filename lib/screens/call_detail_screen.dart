@@ -82,6 +82,9 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
     final waitingForAdmin = rolePending || (score == null && diarization['status'] == 'completed' &&
         speakerIds.length == 2 && roleMapping['agent_speaker_id'] == null);
     final violations = _violations();
+    final analysisWarnings = _result['analysisWarnings'] is List
+        ? (_result['analysisWarnings'] as List).whereType<String>().toList()
+        : <String>[];
 
     return Scaffold(
       appBar: AppBar(title: Text('${widget.call['fileName'] ?? 'Cuộc gọi #$_callId'}', maxLines: 1, overflow: TextOverflow.ellipsis)),
@@ -105,6 +108,12 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
                       Text('Thời lượng: ${_formatDuration(widget.call['duration'] ?? _result['duration'])}'),
                       Text('Ngày gọi: ${_formatDate(widget.call['createDate'] ?? _result['callDate'])}'),
                     ]))),
+                    if (_result['scoringStatus'] == 'incomplete' && analysisWarnings.isNotEmpty)
+                      Card(child: ListTile(
+                        leading: const Icon(Icons.info_outline, color: Colors.deepOrange),
+                        title: const Text('Chưa thể hoàn tất đánh giá'),
+                        subtitle: Text(analysisWarnings.join('\n')),
+                      )),
                     if (waitingForAdmin)
                       const Card(child: ListTile(
                         leading: Icon(Icons.hourglass_top_rounded),
@@ -126,25 +135,30 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
                     const SizedBox(height: 8),
                     Text('Lỗi được phát hiện', style: Theme.of(context).textTheme.titleLarge),
                     const SizedBox(height: 8),
-                    if (score == null)
+                    if (violations.isEmpty && score == null)
                       const Card(child: ListTile(leading: Icon(Icons.info_outline), title: Text('Chưa có kết quả đánh giá lỗi.')))
                     else if (violations.isEmpty)
                       const Card(child: ListTile(leading: Icon(Icons.check_circle_outline), title: Text('Không có lỗi được ghi nhận.')))
                     else
                       ...violations.map((violation) {
-                        final hasTimestamp = violation['hasTimestamp'] != false;
-                        final timestamp = _number(violation['startTime']);
+                        final timestampValue = violation['startTime'];
+                        final hasTimestamp = violation['hasTimestamp'] != false &&
+                            timestampValue is num &&
+                            timestampValue.isFinite &&
+                            timestampValue >= 0;
+                        final timestamp = hasTimestamp ? timestampValue.toDouble() : null;
                         final deduction = violation['deduction'];
                         final details = <String>[
                           deduction is num ? '−${_formatScore(deduction)} điểm' : 'Chưa lưu số điểm trừ',
                           if (violation['snippet'] != null && '${violation['snippet']}'.isNotEmpty) '${violation['snippet']}',
-                          if (hasTimestamp) 'Thời điểm: ${_formatDuration(timestamp)}',
+                          if (timestamp != null) 'Thời điểm: ${_formatDuration(timestamp)}',
+                          if (timestamp == null) 'Không lưu thời điểm',
                         ].join('\n');
                         return Card(child: ListTile(
                           leading: const Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
                           title: Text('${violation['displayName'] ?? violation['categoryName'] ?? 'Lỗi'}'),
                           subtitle: Text(details),
-                          onTap: hasTimestamp ? () => _seekAudio(timestamp) : null,
+                          onTap: timestamp == null ? null : () => _seekAudio(timestamp),
                         ));
                       }),
                     Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [
@@ -155,9 +169,13 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
                           final playerState = snapshot.data;
                           final ready = playerState != null && playerState.processingState != ProcessingState.idle;
                           final playing = playerState?.playing == true;
+                          final completed = playerState?.processingState == ProcessingState.completed;
                           return Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                             IconButton(onPressed: ready ? () => _player.seek(_player.position - const Duration(seconds: 10)) : null, icon: const Icon(Icons.replay_10_rounded)),
-                            IconButton.filled(onPressed: !ready ? () => _playFrom(0) : playing ? _player.pause : _player.play, icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded)),
+                            IconButton.filled(
+                              onPressed: completed ? () => _playFrom(0) : !ready ? () => _playFrom(0) : playing ? _player.pause : _player.play,
+                              icon: Icon(completed ? Icons.replay_rounded : playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                            ),
                             IconButton(onPressed: ready ? () => _player.seek(_player.position + const Duration(seconds: 10)) : null, icon: const Icon(Icons.forward_10_rounded)),
                           ]);
                         },
@@ -168,9 +186,12 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
                           final duration = _player.duration ?? Duration.zero;
                           final position = snapshot.data ?? Duration.zero;
                           final max = duration.inMilliseconds.toDouble();
+                          final displayPosition = max <= 0
+                              ? position
+                              : Duration(milliseconds: position.inMilliseconds.clamp(0, max.toInt()));
                           return Column(children: [
                             Slider(value: max <= 0 ? 0 : position.inMilliseconds.clamp(0, max.toInt()).toDouble(), max: max <= 0 ? 1 : max, onChanged: max <= 0 ? null : (value) => _player.seek(Duration(milliseconds: value.round()))),
-                            Text('${_formatDuration(position.inSeconds)} / ${_formatDuration(duration.inSeconds)}'),
+                            Text('${_formatDuration(displayPosition.inSeconds)} / ${_formatDuration(duration.inSeconds)}'),
                           ]);
                         },
                       ),
@@ -199,13 +220,17 @@ class _CallDetailScreenState extends ConsumerState<CallDetailScreen> {
     final speaker = '${chunk['speaker'] ?? 'unknown'}' == 'unknown'
         ? '${chunk['speakerId'] ?? 'Người nói'}'
         : '${chunk['speaker']}';
-    final start = _number(chunk['startTime'] ?? chunk['start']);
+    final startValue = chunk['startTime'] ?? chunk['start'];
+    final parsedStart = startValue is num ? startValue.toDouble() : double.tryParse('$startValue');
+    final start = parsedStart != null && parsedStart.isFinite && parsedStart >= 0
+        ? parsedStart
+        : null;
     return Card(
       child: InkWell(
         borderRadius: BorderRadius.circular(22),
-        onTap: () => _seekAudio(start),
+        onTap: start == null ? null : () => _seekAudio(start),
         child: Padding(padding: const EdgeInsets.all(14), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(_formatDuration(start), style: Theme.of(context).textTheme.labelMedium),
+          Text(start == null ? 'Không lưu thời điểm' : _formatDuration(start), style: Theme.of(context).textTheme.labelMedium),
           const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(_speakerLabel(speaker), style: Theme.of(context).textTheme.labelLarge), const SizedBox(height: 4), Text('${chunk['text'] ?? ''}')])) ,
         ])),

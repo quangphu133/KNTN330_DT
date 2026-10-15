@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -152,14 +153,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   Future<void> _refreshProfile() async {
-    if (ref.read(authProvider).token == null) return;
+    final token = ref.read(authProvider).token;
+    if (token == null) return;
     try {
       final user = await _api.getCurrentUser();
-      if (mounted) {
-        await ref.read(authProvider.notifier).saveProfile(user);
-        setState(() => _errors.remove('profile'));
-      }
+      if (!mounted || ref.read(authProvider).token != token) return;
+      await ref.read(authProvider.notifier).saveProfile(user);
+      if (mounted) setState(() => _errors.remove('profile'));
     } catch (error) {
+      if (error is DioException &&
+          (error.response?.statusCode == 401 ||
+              error.response?.statusCode == 403)) {
+        if (!mounted || ref.read(authProvider).token != token) return;
+        await ref.read(authProvider.notifier).logout();
+        return;
+      }
       _recordError('profile', error);
     }
   }
@@ -323,7 +331,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       final filename = '${call['fileName'] ?? ''}'.toLowerCase();
       final matchesSearch = filename.contains(_searchQuery.toLowerCase()) ||
           '${call['additionalMetadata'] is Map ? (call['additionalMetadata'] as Map)['clientNumber'] ?? '' : ''}'.contains(_searchQuery);
-      final callDate = DateTime.tryParse('${call['createDate'] ?? ''}');
+      final rawCallDate = '${call['createDate'] ?? ''}';
+      final hasZone = rawCallDate.endsWith('Z') ||
+          RegExp(r'[+-]\d{2}:?\d{2}$').hasMatch(rawCallDate);
+      final callDate = DateTime.tryParse(hasZone ? rawCallDate : '${rawCallDate}Z');
       final matchesDate = _dateFilterDays == 0 || callDate == null || DateTime.now().difference(callDate.toLocal()).inDays <= _dateFilterDays;
       if (!matchesSearch || !matchesDate) return false;
       return switch (_selectedFilter) {
@@ -668,9 +679,19 @@ class _UploadCallFormState extends State<_UploadCallForm> {
   final AudioPlayer _previewPlayer = AudioPlayer();
   String? _previewPath;
   PlatformFile? _file;
+  List<Map<String, dynamic>> _projects = const [];
+  int? _selectedProjectId;
+  String? _projectError;
   double? _progress;
   bool _uploading = false;
   bool _previewLoading = false;
+  bool _loadingProjects = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshProjects();
+  }
 
   @override
   void dispose() {
@@ -697,6 +718,37 @@ class _UploadCallFormState extends State<_UploadCallForm> {
         ),
       ],
       const SizedBox(height: 12),
+      if (_loadingProjects)
+        const Center(child: Padding(
+          padding: EdgeInsets.all(12),
+          child: CircularProgressIndicator(),
+        ))
+      else if (_projectError != null)
+        Row(children: [
+          Expanded(child: Text(_projectError!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
+          IconButton(
+            tooltip: 'Tải lại dự án',
+            onPressed: _refreshProjects,
+            icon: const Icon(Icons.refresh),
+          ),
+        ])
+      else if (_projects.isEmpty)
+        const Text('Bạn chưa được phân công dự án đang hoạt động. Vui lòng liên hệ quản trị viên.')
+      else
+        DropdownButtonFormField<int>(
+          initialValue: _selectedProjectId,
+          decoration: const InputDecoration(labelText: 'Dự án'),
+          hint: const Text('Chọn dự án được phân công'),
+          items: _projects.map((project) {
+            final id = _readInt(project['id']);
+            return DropdownMenuItem<int>(
+              value: id,
+              child: Text('${project['name'] ?? 'Dự án #$id'}'),
+            );
+          }).toList(),
+          onChanged: _uploading ? null : (value) => setState(() => _selectedProjectId = value),
+        ),
+      const SizedBox(height: 12),
       TextField(controller: _clientNumber, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Số khách hàng (không bắt buộc)')),
       if (_progress != null) ...[
         const SizedBox(height: 16),
@@ -705,9 +757,36 @@ class _UploadCallFormState extends State<_UploadCallForm> {
         Text('Đang tải lên ${(_progress! * 100).round()}%'),
       ],
       const SizedBox(height: 18),
-      FilledButton.icon(onPressed: _file == null || _uploading ? null : _upload, icon: const Icon(Icons.cloud_upload_outlined), label: Text(_uploading ? 'Đang gửi…' : 'Gửi phân tích')),
+      FilledButton.icon(onPressed: _file == null || _selectedProjectId == null || _loadingProjects || _projectError != null || _projects.isEmpty || _uploading ? null : _upload, icon: const Icon(Icons.cloud_upload_outlined), label: Text(_uploading ? 'Đang gửi…' : 'Gửi phân tích')),
     ])),
   );
+
+  Future<void> _refreshProjects() async {
+    if (!mounted) return;
+    setState(() {
+      _loadingProjects = true;
+      _projectError = null;
+    });
+    try {
+      final projects = await widget.api.getAssignedProjects();
+      if (!mounted) return;
+      setState(() {
+        _projects = projects;
+        if (!_projects.any((project) => _readInt(project['id']) == _selectedProjectId)) {
+          _selectedProjectId = null;
+        }
+        _loadingProjects = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _projects = const [];
+        _selectedProjectId = null;
+        _projectError = widget.api.getError(error);
+        _loadingProjects = false;
+      });
+    }
+  }
 
   Future<void> _chooseFile() async {
     try {
@@ -743,6 +822,7 @@ class _UploadCallFormState extends State<_UploadCallForm> {
     try {
       final job = await widget.api.uploadCall(
         file: file,
+        projectId: _selectedProjectId!,
         clientNumber: _clientNumber.text,
         onProgress: (sent, total) {
           if (mounted && total > 0) setState(() => _progress = sent / total);
@@ -755,6 +835,10 @@ class _UploadCallFormState extends State<_UploadCallForm> {
       Navigator.of(context).pop();
       messenger.showSnackBar(SnackBar(content: Text(failed ? 'Đã lưu bản ghi âm. Hệ thống AI chưa xử lý được.' : 'Đã gửi bản ghi âm. Đang chờ kết quả phân tích.')));
     } catch (error) {
+      if (error is DioException &&
+          (error.response?.statusCode == 403 || error.response?.statusCode == 422)) {
+        await _refreshProjects();
+      }
       if (mounted) _message(widget.api.getError(error));
     } finally {
       if (mounted) setState(() => _uploading = false);
